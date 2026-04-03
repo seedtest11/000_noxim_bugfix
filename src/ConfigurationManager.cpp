@@ -381,6 +381,8 @@ void loadConfiguration()
   GlobalParams::use_powermanager = readParam<bool>(config, "use_wirxsleep");
   GlobalParams::ideal_transport =
       readParam<bool>(config, "ideal_transport", false);
+  GlobalParams::ideal_return_accounting =
+      readParam<bool>(config, "ideal_return_accounting", false);
 
   set<int> channelSet;
 

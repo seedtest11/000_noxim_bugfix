@@ -13,6 +13,7 @@
 
 #include <map>
 #include <queue>
+#include <set>
 #include <systemc.h>
 #include <unordered_map>
 
@@ -208,6 +209,7 @@ public: // 建议将内部状态变量设为私有
 
   int last_serviced_vc_; // 上一个服务的虚拟通道ID
   int current_cycle = 0;
+  std::map<int, std::set<int>> return_sources_seen_by_compute_cycle_;
   // 这并不是一个优雅的实现 但是我们必须这么做。。。
 
   void evict_weights_self(); // 自驱逐权重函数
@@ -236,6 +238,12 @@ public: // 建议将内部状态变量设为私有
   bool can_accept_direct_packet(const Packet &pkt) const;
   bool receive_direct_packet(const Packet &pkt, int src_id);
   bool direct_deliver_packet(const Packet &pkt);
+  bool direct_deliver_return_credit(const Packet &pkt);
+  int resolve_return_target_node(const Packet &pkt) const;
+  size_t compute_return_credit_for_target(const Packet &pkt,
+                                          int target_id) const;
+  bool receive_direct_return_credit(size_t credited_outputs, int src_id,
+                                    int source_compute_cycle);
 
   int find_child_id(int id);
   Flit generate_next_flit_from_queue(std::queue<Packet> & queue);

@@ -218,6 +218,10 @@ struct GlobalParams {
   // transfer packet payloads to destination PE accounting.
   static bool ideal_transport;
   static vector<ProcessingElement *> pe_registry;
+
+  // Ideal return accounting mode: allow return packets to bypass NoC flit path
+  // and directly credit the destination accounting state.
+  static bool ideal_return_accounting;
 };
 
 #endif

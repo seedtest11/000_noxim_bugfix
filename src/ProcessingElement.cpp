@@ -516,10 +516,31 @@ void ProcessingElement::handle_tx_for_all_vcs()
 
     // Ideal mode: bypass flits/links/routers and directly deliver packet
     // payload to destination PE accounting.
+    if (GlobalParams::ideal_transport &&
+        GlobalParams::ideal_return_accounting &&
+        packet_to_send.command == -1 && role == ROLE_BUFFER)
+    {
+      if (!direct_deliver_return_credit(packet_to_send))
+      {
+        LOG << "[TX_VC" << vc
+            << "] Direct-return blocked "
+            << "target_role=" << role_to_str(packet_to_send.target_role)
+            << " payload=" << packet_to_send.payload_data_size
+            << " src=" << local_id << endl;
+        continue;
+      }
+
+      packet_queues_[vc].pop();
+      last_serviced_vc_ = vc;
+      LOG << "[TX_VC" << vc << "] Direct-return credited "
+          << "src=" << packet_to_send.src_id
+          << " payload=" << packet_to_send.payload_data_size << endl;
+      break;
+    }
+
     // Hybrid ideal mode:
     // - Non-return packets: direct packet-level delivery (bypass NoC links)
-    // - Return packets (command == -1): keep original flit/router path to
-    //   preserve in-network aggregation semantics.
+    // - Return packets: optionally bypassed by direct return accounting branch
     if (GlobalParams::ideal_transport && packet_to_send.command != -1)
     {
       if (!direct_deliver_packet(packet_to_send))
@@ -598,6 +619,134 @@ bool ProcessingElement::packet_queues_are_empty() const
     }
   }
   return true;
+}
+
+int ProcessingElement::resolve_return_target_node(const Packet &pkt) const
+{
+  if (pkt.dst_id >= 0)
+  {
+    return pkt.dst_id;
+  }
+
+  int parent_id = GlobalParams::parent_map[local_id];
+  while (parent_id != -1)
+  {
+    if (parent_id >= 0 &&
+        parent_id < static_cast<int>(GlobalParams::pe_registry.size()))
+    {
+      ProcessingElement *pe = GlobalParams::pe_registry[parent_id];
+      if (pe != nullptr && pe->role == pkt.target_role)
+      {
+        return parent_id;
+      }
+    }
+    parent_id = GlobalParams::parent_map[parent_id];
+  }
+
+  if (!upstream_node_ids.empty())
+  {
+    return upstream_node_ids[0];
+  }
+
+  return -1;
+}
+
+size_t ProcessingElement::compute_return_credit_for_target(const Packet &pkt,
+                                                           int target_id) const
+{
+  size_t multiplier = 1;
+  int cur = GlobalParams::parent_map[local_id];
+
+  while (cur != -1)
+  {
+    const int lvl = GlobalParams::node_level_map[cur];
+    const LevelConfig &level_cfg =
+        GlobalParams::hierarchical_config.get_level_config(lvl);
+
+    if (level_cfg.aggregate)
+    {
+      size_t factor = 1;
+      auto it = level_cfg.routing_patterns.find(DataType::OUTPUT);
+      if (it != level_cfg.routing_patterns.end() &&
+          !it->second.port_groups.empty())
+      {
+        factor = it->second.port_groups.size();
+      }
+      else if (GlobalParams::fanouts_per_level[lvl] > 0)
+      {
+        factor = static_cast<size_t>(GlobalParams::fanouts_per_level[lvl]);
+      }
+      multiplier *= factor;
+    }
+
+    if (cur == target_id)
+    {
+      return static_cast<size_t>(pkt.payload_data_size) * multiplier;
+    }
+
+    cur = GlobalParams::parent_map[cur];
+  }
+
+  return 0;
+}
+
+bool ProcessingElement::receive_direct_return_credit(size_t credited_outputs,
+                                                     int src_id,
+                                                     int source_compute_cycle)
+{
+  std::set<int> &seen = return_sources_seen_by_compute_cycle_[source_compute_cycle];
+  if (seen.count(src_id) != 0)
+  {
+    LOG << "[DIRECT_RETURN] Duplicate source ignored "
+        << "cycle=" << source_compute_cycle << " src=" << src_id
+        << " dst=" << local_id << endl;
+    return true;
+  }
+  seen.insert(src_id);
+
+  outputs_received_count_ += credited_outputs;
+  buffer_state_changed_event.notify(SC_ZERO_TIME);
+
+  LOG << "[DIRECT_RETURN] Credited "
+      << "cycle=" << source_compute_cycle
+      << " src=" << src_id
+      << " dst=" << local_id
+      << " credited=" << credited_outputs
+      << " total_outputs_received=" << outputs_received_count_ << "/"
+      << outputs_required_count_ << endl;
+  return true;
+}
+
+bool ProcessingElement::direct_deliver_return_credit(const Packet &pkt)
+{
+  int dst_id = resolve_return_target_node(pkt);
+  if (dst_id < 0 ||
+      dst_id >= static_cast<int>(GlobalParams::pe_registry.size()))
+  {
+    LOG << "[DIRECT_RETURN] Invalid target resolved "
+        << "dst_id=" << dst_id << " src=" << local_id << endl;
+    return false;
+  }
+
+  ProcessingElement *dst = GlobalParams::pe_registry[dst_id];
+  if (dst == nullptr)
+  {
+    LOG << "[DIRECT_RETURN] Null target PE pointer for dst_id=" << dst_id
+        << endl;
+    return false;
+  }
+
+  size_t credited_outputs = compute_return_credit_for_target(pkt, dst_id);
+  if (credited_outputs == 0)
+  {
+    LOG << "[DIRECT_RETURN] Zero credit computed "
+        << "src=" << local_id << " dst=" << dst_id
+        << " payload=" << pkt.payload_data_size << endl;
+    return false;
+  }
+
+  return dst->receive_direct_return_credit(credited_outputs, local_id,
+                                           compute_cycles);
 }
 
 int ProcessingElement::get_vc_id_for_packet(const Packet &pkt) const
@@ -874,10 +1023,10 @@ void ProcessingElement::txProcess()
   {
     logical_timestamp++;
     is_compute_complete = false;
-    // cout << sc_time_stamp() << ": PE[" << local_id
-    //      << "] Completed compute for cycle " << compute_cycles
-    //      << " compute latency is " << task_manager_->get_compute_latency()
-    //      << endl;
+    cout << sc_time_stamp() << ": PE[" << local_id
+         << "] Completed compute for cycle " << compute_cycles
+         << " compute latency is " << task_manager_->get_compute_latency()
+         << endl;
     compute_cycles++;
 
     // 基于计算周期数判断是否需要自驱逐
@@ -959,6 +1108,7 @@ void ProcessingElement::reset_logic()
 
   logical_timestamp = 0;
   outputs_received_count_ = 0;
+  return_sources_seen_by_compute_cycle_.clear();
   current_cycle++;
 }
 

@@ -84,3 +84,4 @@ string GlobalParams::transmission_mode =
     "optimized"; // Default to optimized mode
 bool GlobalParams::ideal_transport = false;
 vector<ProcessingElement *> GlobalParams::pe_registry;
+bool GlobalParams::ideal_return_accounting = false;
