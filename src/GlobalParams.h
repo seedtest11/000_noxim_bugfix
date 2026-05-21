@@ -122,6 +122,7 @@ typedef map<double, pair<double, double>> LinkBitLinePowerConfig;
 typedef struct {
   map<pair<double, double>, pair<double, double>> crossbar_pm;
   vector<array<double, 6>> asymmetric_crossbar;
+  vector<array<double, 6>> dense_asymmetric_proxy;
   map<int, pair<double, double>> network_interface;
   map<string, pair<double, double>> routing_algorithm_pm;
   map<string, pair<double, double>> selection_strategy_pm;
@@ -222,6 +223,15 @@ struct GlobalParams {
   // Ideal return accounting mode: allow return packets to bypass NoC flit path
   // and directly credit the destination accounting state.
   static bool ideal_return_accounting;
+
+  // Power-model selector for hierarchical crossbar estimation.
+  // false: use asymmetric_crossbar (default)
+  // true:  use dense_asymmetric_proxy when available
+  static bool use_dense_asymmetric_proxy;
+
+  // Estimate-only mode: stop early and extrapolate total time.
+  static bool estimate_only;
+  static int estimate_window;
 };
 
 #endif

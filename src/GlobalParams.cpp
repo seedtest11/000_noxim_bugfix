@@ -85,3 +85,6 @@ string GlobalParams::transmission_mode =
 bool GlobalParams::ideal_transport = false;
 vector<ProcessingElement *> GlobalParams::pe_registry;
 bool GlobalParams::ideal_return_accounting = false;
+bool GlobalParams::use_dense_asymmetric_proxy = false;
+bool GlobalParams::estimate_only = false;
+int GlobalParams::estimate_window = 1;

@@ -383,6 +383,8 @@ void loadConfiguration()
       readParam<bool>(config, "ideal_transport", false);
   GlobalParams::ideal_return_accounting =
       readParam<bool>(config, "ideal_return_accounting", false);
+  GlobalParams::use_dense_asymmetric_proxy =
+      readParam<bool>(config, "use_dense_asymmetric_proxy", false);
 
   set<int> channelSet;
 

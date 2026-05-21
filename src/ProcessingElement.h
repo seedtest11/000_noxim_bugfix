@@ -202,6 +202,7 @@ public: // 建议将内部状态变量设为私有
 
   int eviction_interval_cycles_;  // 驱逐间隔周期数
   size_t weight_eviction_amount_; // 每次驱逐的权重数量
+  size_t weight_multiplier_;      // 可选：动态权重倍数上限
 
   // PE数据缺失统计
   std::unordered_map<DataType, size_t> data_wait_stats_;
@@ -210,6 +211,10 @@ public: // 建议将内部状态变量设为私有
   int last_serviced_vc_; // 上一个服务的虚拟通道ID
   int current_cycle = 0;
   std::map<int, std::set<int>> return_sources_seen_by_compute_cycle_;
+  std::map<int, size_t> pending_return_outputs_by_compute_cycle_;
+  size_t expected_return_sources_cached_ = 0;
+  size_t return_credit_per_src_cached_ = 0;
+  size_t return_credit_batch_cached_ = 0;
   // 这并不是一个优雅的实现 但是我们必须这么做。。。
 
   void evict_weights_self(); // 自驱逐权重函数
@@ -244,6 +249,9 @@ public: // 建议将内部状态变量设为私有
                                           int target_id) const;
   bool receive_direct_return_credit(size_t credited_outputs, int src_id,
                                     int source_compute_cycle);
+  size_t get_expected_return_source_count() const;
+  size_t compute_return_multiplier_from_source_role(PE_Role source_role) const;
+  void init_return_credit_constants();
 
   int find_child_id(int id);
   Flit generate_next_flit_from_queue(std::queue<Packet> & queue);

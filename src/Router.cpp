@@ -372,16 +372,11 @@ void Router::txProcess() {
           if (use_predefined_routing &&
               routing_patterns.count(flit_ref.data_type) > 0) {
             flit_ref.current_forward++;
-            // 只有头flit和尾flit才可能复制多份
-            if (flit_ref.flit_type == FLIT_TYPE_HEAD ||
-                flit_ref.flit_type == FLIT_TYPE_TAIL) {
-              const RoutingPattern &pattern =
-                  routing_patterns[flit_ref.data_type];
-              if (flit_ref.current_forward < flit_ref.forward_count) {
-                should_pop = false; // 还未完成转发，不pop
-              }
+            // 只要还没完成所有 forward 轮次，就保留在队首继续复制。
+            // BODY 也要和 HEAD/TAIL 一样继续走完全部转发轮次。
+            if (flit_ref.current_forward < flit_ref.forward_count) {
+              should_pop = false; // 还未完成转发，不pop
             }
-            // BODY flit 直接弹出，不参与复制计数
           }
 
           flit = (*buffers[selected.input])[selected.vc].Front();

@@ -112,6 +112,13 @@ template <> struct convert<RoleProperties> {
       rhs.weight_eviction_amount = 0; // 默认值：不驱逐权重
     }
 
+    // 可选字段：weight_multiplier
+    if (node["weight_multiplier"]) {
+      rhs.weight_multiplier = node["weight_multiplier"].as<size_t>();
+    } else {
+      rhs.weight_multiplier = 0; // 默认值：不启用动态倍数
+    }
+
     return true;
   }
 };

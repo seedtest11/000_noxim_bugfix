@@ -185,6 +185,20 @@ namespace YAML
         }
       }
 
+      if (node["dense_asymmetric_proxy"])
+      {
+        cout << "[DEBUG] Found dense_asymmetric_proxy section, size="
+             << node["dense_asymmetric_proxy"].size() << endl;
+        for (YAML::const_iterator it = node["dense_asymmetric_proxy"].begin();
+             it != node["dense_asymmetric_proxy"].end(); ++it)
+        {
+          vector<double> v = it->as<vector<double>>();
+          array<double, 6> entry;
+          copy(v.begin(), v.begin() + 6, entry.begin());
+          routerPowerConfig.dense_asymmetric_proxy.push_back(entry);
+        }
+      }
+
       return true;
     }
   };

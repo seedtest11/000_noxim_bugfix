@@ -131,10 +131,14 @@ void Power::configureRouter(int link_width, int buffer_depth,
 
     // CrossBar
     if (GlobalParams::topology == TOPOLOGY_HIERARCHICAL &&
-        !GlobalParams::power_configuration.routerPowerConfig.asymmetric_crossbar
-             .empty())
+        ((!GlobalParams::use_dense_asymmetric_proxy &&
+          !GlobalParams::power_configuration.routerPowerConfig.asymmetric_crossbar
+               .empty()) ||
+         (GlobalParams::use_dense_asymmetric_proxy &&
+          !GlobalParams::power_configuration.routerPowerConfig
+               .dense_asymmetric_proxy.empty())))
     {
-        // Hierarchical mode with asymmetric_crossbar configuration
+        // Hierarchical mode with configurable asymmetric crossbar power table
         const LevelConfig &lc =
             GlobalParams::hierarchical_config.get_level_config(level);
         int in_ports = 1;
@@ -152,9 +156,15 @@ void Power::configureRouter(int link_width, int buffer_depth,
             in_bits = out_bits;
         }
 
+        const auto &active_table =
+            GlobalParams::use_dense_asymmetric_proxy
+                ? GlobalParams::power_configuration.routerPowerConfig
+                      .dense_asymmetric_proxy
+                : GlobalParams::power_configuration.routerPowerConfig
+                      .asymmetric_crossbar;
+
         bool matched = false;
-        for (const auto &e : GlobalParams::power_configuration.routerPowerConfig
-                                 .asymmetric_crossbar)
+        for (const auto &e : active_table)
         {
             if (static_cast<int>(e[0]) == in_ports &&
                 static_cast<int>(e[1]) == out_ports &&
@@ -172,21 +182,29 @@ void Power::configureRouter(int link_width, int buffer_depth,
             // Last level may not have crossbar, set to 0
             if (level != GlobalParams::num_levels - 1)
             {
-                cerr << "[DEBUG] asymmetric_crossbar not matched for level " << level
+                cerr << "[DEBUG] "
+                     << (GlobalParams::use_dense_asymmetric_proxy
+                             ? "dense_asymmetric_proxy"
+                             : "asymmetric_crossbar")
+                     << " not matched for level " << level
                      << ", in_ports=" << in_ports
                      << ", out_ports=" << out_ports
                      << ", in_bits=" << in_bits
                      << ", out_bits=" << out_bits
                      << ", transmission_mode=" << GlobalParams::transmission_mode
                      << endl;
-                cerr << "[DEBUG] Available asymmetric_crossbar entries:" << endl;
-                for (const auto &e : GlobalParams::power_configuration.routerPowerConfig.asymmetric_crossbar)
+                cerr << "[DEBUG] Available "
+                     << (GlobalParams::use_dense_asymmetric_proxy
+                             ? "dense_asymmetric_proxy"
+                             : "asymmetric_crossbar")
+                     << " entries:" << endl;
+                for (const auto &e : active_table)
                 {
                     cerr << "  [" << static_cast<int>(e[0]) << ", " << static_cast<int>(e[1])
                          << ", " << static_cast<int>(e[2]) << ", " << static_cast<int>(e[3])
                          << ", " << e[4] << ", " << e[5] << "]" << endl;
                 }
-                assert(false && "No matching asymmetric_crossbar entry for non-last "
+                assert(false && "No matching hierarchical crossbar power entry for non-last "
                                 "level in HIERARCHICAL mode");
             }
             crossbar_pwr_s = 0.0;

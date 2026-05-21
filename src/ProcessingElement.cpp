@@ -161,11 +161,13 @@ void ProcessingElement::configure(int id, int level_idx,
     {
       eviction_interval_cycles_ = props->eviction_interval_cycles;
       weight_eviction_amount_ = props->weight_eviction_amount;
+      weight_multiplier_ = props->weight_multiplier;
     }
     else
     {
       eviction_interval_cycles_ = 0; // 默认值：不启用自驱逐
       weight_eviction_amount_ = 0;   // 默认值：不驱逐权重
+      weight_multiplier_ = 0;        // 默认值：不启用动态倍数
     }
 
     // 使用配置的outputs_required_count值
@@ -197,6 +199,7 @@ void ProcessingElement::configure(int id, int level_idx,
   // V. 通用状态初始化
   //========================================================================
   logical_timestamp = 0;
+  init_return_credit_constants();
 
   // 调试日志
   LOG << "PE[" << local_id << "] configured as " << role_to_str(role)
@@ -518,7 +521,7 @@ void ProcessingElement::handle_tx_for_all_vcs()
     // payload to destination PE accounting.
     if (GlobalParams::ideal_transport &&
         GlobalParams::ideal_return_accounting &&
-        packet_to_send.command == -1 && role == ROLE_BUFFER)
+        packet_to_send.command == -1 && role != ROLE_DISTRIBUTOR)
     {
       if (!direct_deliver_return_credit(packet_to_send))
       {
@@ -694,7 +697,9 @@ bool ProcessingElement::receive_direct_return_credit(size_t credited_outputs,
                                                      int src_id,
                                                      int source_compute_cycle)
 {
-  std::set<int> &seen = return_sources_seen_by_compute_cycle_[source_compute_cycle];
+  (void)credited_outputs;
+  std::set<int> &seen =
+      return_sources_seen_by_compute_cycle_[source_compute_cycle];
   if (seen.count(src_id) != 0)
   {
     LOG << "[DIRECT_RETURN] Duplicate source ignored "
@@ -703,18 +708,145 @@ bool ProcessingElement::receive_direct_return_credit(size_t credited_outputs,
     return true;
   }
   seen.insert(src_id);
+  pending_return_outputs_by_compute_cycle_[source_compute_cycle] += credited_outputs;
 
-  outputs_received_count_ += credited_outputs;
+  const size_t expected_sources =
+      expected_return_sources_cached_ > 0 ? expected_return_sources_cached_
+                                          : get_expected_return_source_count();
+  if (expected_sources == 0)
+  {
+    LOG << "[DIRECT_RETURN] Invalid expected source count (0) for dst="
+        << local_id << endl;
+    return false;
+  }
+
+  if (seen.size() < expected_sources)
+  {
+    LOG << "[DIRECT_RETURN] Buffered "
+        << "cycle=" << source_compute_cycle << " src=" << src_id
+        << " dst=" << local_id << " progress=" << seen.size() << "/"
+        << expected_sources
+        << " pending_outputs="
+        << pending_return_outputs_by_compute_cycle_[source_compute_cycle]
+        << endl;
+    return true;
+  }
+
+  const size_t observed_batch =
+      pending_return_outputs_by_compute_cycle_[source_compute_cycle];
+  const size_t credited_batch =
+      return_credit_batch_cached_ > 0 ? return_credit_batch_cached_
+                                      : observed_batch;
+  outputs_received_count_ += credited_batch;
+  pending_return_outputs_by_compute_cycle_.erase(source_compute_cycle);
+  return_sources_seen_by_compute_cycle_.erase(source_compute_cycle);
   buffer_state_changed_event.notify(SC_ZERO_TIME);
 
-  LOG << "[DIRECT_RETURN] Credited "
-      << "cycle=" << source_compute_cycle
-      << " src=" << src_id
-      << " dst=" << local_id
-      << " credited=" << credited_outputs
-      << " total_outputs_received=" << outputs_received_count_ << "/"
-      << outputs_required_count_ << endl;
+  cout << "sc_timestamp = " << sc_time_stamp() << " [DIRECT_RETURN] Credited "
+       << "cycle=" << source_compute_cycle << " src=" << src_id
+       << " dst=" << local_id << " credited_batch=" << credited_batch
+       << " observed_batch=" << observed_batch
+       << " total_outputs_received=" << outputs_received_count_ << "/"
+       << outputs_required_count_ << endl;
   return true;
+}
+
+size_t ProcessingElement::get_expected_return_source_count() const
+{
+  size_t cnt = 0;
+  for (int id : downstream_node_ids)
+  {
+    if (id >= 0)
+    {
+      ++cnt;
+    }
+  }
+  return cnt;
+}
+
+size_t ProcessingElement::compute_return_multiplier_from_source_role(
+    PE_Role source_role) const
+{
+  int source_level = -1;
+  for (size_t i = 0; i < GlobalParams::hierarchical_config.levels.size(); ++i)
+  {
+    if (GlobalParams::hierarchical_config.levels[i].roles == source_role)
+    {
+      source_level = static_cast<int>(i);
+      break;
+    }
+  }
+  if (source_level <= level_index)
+  {
+    return 1;
+  }
+
+  size_t multiplier = 1;
+  for (int lvl = source_level - 1; lvl >= level_index; --lvl)
+  {
+    const LevelConfig &level_cfg =
+        GlobalParams::hierarchical_config.get_level_config(lvl);
+    if (!level_cfg.aggregate)
+    {
+      continue;
+    }
+    size_t factor = 1;
+    auto it = level_cfg.routing_patterns.find(DataType::OUTPUT);
+    if (it != level_cfg.routing_patterns.end() && !it->second.port_groups.empty())
+    {
+      factor = it->second.port_groups.size();
+    }
+    else if (GlobalParams::fanouts_per_level[lvl] > 0)
+    {
+      factor = static_cast<size_t>(GlobalParams::fanouts_per_level[lvl]);
+    }
+    multiplier *= factor;
+  }
+  return multiplier;
+}
+
+void ProcessingElement::init_return_credit_constants()
+{
+  expected_return_sources_cached_ = get_expected_return_source_count();
+  return_credit_per_src_cached_ = 0;
+  return_credit_batch_cached_ = 0;
+
+  if (task_manager_ == nullptr || expected_return_sources_cached_ == 0)
+  {
+    return;
+  }
+
+  const PE_Role source_role =
+      static_cast<PE_Role>(static_cast<int>(role) + 1);
+  auto *commands = task_manager_->get_commands_for_role(role_to_str(source_role));
+  if (commands == nullptr || commands->empty())
+  {
+    return;
+  }
+
+  size_t source_outputs = 0;
+  for (const auto &cmd : *commands)
+  {
+    if (cmd.evict_payload.outputs > 0)
+    {
+      source_outputs = static_cast<size_t>(cmd.evict_payload.outputs);
+      break;
+    }
+  }
+  if (source_outputs == 0)
+  {
+    return;
+  }
+
+  // In ideal return accounting, per-source credit represents one logical
+  // producer's completion signal (e.g., 16 outputs), not the aggregated payload.
+  return_credit_per_src_cached_ = source_outputs;
+
+  // Batch credit is the logical per-round contribution at this destination.
+  // Keep aggregation multiplier, but do not multiply by source count again.
+  const size_t multiplier =
+      compute_return_multiplier_from_source_role(source_role);
+  return_credit_batch_cached_ = source_outputs * multiplier;
 }
 
 bool ProcessingElement::direct_deliver_return_credit(const Packet &pkt)
@@ -736,14 +868,9 @@ bool ProcessingElement::direct_deliver_return_credit(const Packet &pkt)
     return false;
   }
 
-  size_t credited_outputs = compute_return_credit_for_target(pkt, dst_id);
-  if (credited_outputs == 0)
-  {
-    LOG << "[DIRECT_RETURN] Zero credit computed "
-        << "src=" << local_id << " dst=" << dst_id
-        << " payload=" << pkt.payload_data_size << endl;
-    return false;
-  }
+  size_t credited_outputs = dst->return_credit_per_src_cached_ > 0
+                                ? dst->return_credit_per_src_cached_
+                                : static_cast<size_t>(pkt.payload_data_size);
 
   return dst->receive_direct_return_credit(credited_outputs, local_id,
                                            compute_cycles);
@@ -1023,10 +1150,6 @@ void ProcessingElement::txProcess()
   {
     logical_timestamp++;
     is_compute_complete = false;
-    cout << sc_time_stamp() << ": PE[" << local_id
-         << "] Completed compute for cycle " << compute_cycles
-         << " compute latency is " << task_manager_->get_compute_latency()
-         << endl;
     compute_cycles++;
 
     // 基于计算周期数判断是否需要自驱逐
@@ -1109,6 +1232,7 @@ void ProcessingElement::reset_logic()
   logical_timestamp = 0;
   outputs_received_count_ = 0;
   return_sources_seen_by_compute_cycle_.clear();
+  pending_return_outputs_by_compute_cycle_.clear();
   current_cycle++;
 }
 
@@ -1138,6 +1262,12 @@ void ProcessingElement::run_compute_logic()
     {
       DataType type = entry.first;
       size_t size = entry.second;
+      if (type == DataType::WEIGHT && weight_multiplier_ > 0)
+      {
+        size_t dynamic_multiplier =
+            static_cast<size_t>(compute_cycles % weight_multiplier_) + 1;
+        size *= dynamic_multiplier;
+      }
 
       if (!unified_buffer_manager_->AreDataTypeReady(type, size))
       {
@@ -1152,9 +1282,6 @@ void ProcessingElement::run_compute_logic()
       data_wait_stats_[missing_type]++;
       total_wait_cycles_++;
 
-      LOG << sc_time_stamp() << ": PE[" << local_id << "] Waiting for "
-          << DataType_to_str(missing_type)
-          << " data (wait cycles: " << total_wait_cycles_ << ")" << endl;
       return;
     }
 
@@ -1165,8 +1292,9 @@ void ProcessingElement::run_compute_logic()
     }
 
     // 所有数据都准备好了，开始计算。
-    // 注意：本周期只进入“计算中”状态，不立刻扣减，避免墙钟观测少1个周期。
+    // 统一补偿 1 个调度/相位周期，避免不同 transport 模式下对小粒度计算不公平。
     int latency = task_manager_->get_compute_latency();
+    latency = std::max(latency - 1, 0);
     if (latency <= 0)
     {
       is_compute_complete = true;

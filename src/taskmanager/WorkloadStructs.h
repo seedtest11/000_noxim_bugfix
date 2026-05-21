@@ -88,10 +88,11 @@ struct RoleProperties {
   int sync_per_timestep;        // 计算延迟（仅对 COMPUTE 角色有效）
   int eviction_interval_cycles; // 驱逐间隔周期数
   size_t weight_eviction_amount; // 每次驱逐的权重数量
+  size_t weight_multiplier;       // 权重乘数上限（可选）
 
   RoleProperties()
       : compute_latency(0), sync_per_timestep(0), eviction_interval_cycles(0),
-        weight_eviction_amount(0) {}
+        weight_eviction_amount(0), weight_multiplier(0) {}
 };
 
 struct AtomicDispatchAction {
