@@ -1,0 +1,24 @@
+{
+  "status": "collected",
+  "initial_sha": "147e9f37ab2c6b7f7040825f89f86e7b9c56eb8e",
+  "collector_created_final_commits": true,
+  "remote_publication": "pending",
+  "human_evaluation": "pending",
+  "created_at": "2026-10-01T13:21:12.575982+00:00",
+  "sides": {
+    "A": {
+      "session_id": "ecaaf16d-3020-47ad-9fbb-297c7f5a3932",
+      "final_sha": "48fd628da3369c150ad97221337faf1da7fdb978",
+      "initial_is_ancestor": true,
+      "trajectory_sha256": "885153f95ce1caa7be2a8a01332003763216fc095282e1d3bc4f296e49769750",
+      "trajectory_lines": 185
+    },
+    "B": {
+      "session_id": "12b0230e-2efc-429e-a11c-e1b15235e6a2",
+      "final_sha": "c46cf3db267eb55eb384701d96e7ffe8eabeb741",
+      "initial_is_ancestor": true,
+      "trajectory_sha256": "c64593c58c39b2de5d57394732299cc350defa73abd0da158556cd605dbce86e",
+      "trajectory_lines": 196
+    }
+  }
+}
