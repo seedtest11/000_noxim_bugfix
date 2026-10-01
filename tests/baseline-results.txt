@@ -1,0 +1,27 @@
+sanity exit=0
+PASS sanity
+
+shared_committed exit=1
+HEAD blocked=0 committed=64
+TAIL consumed=1 WEIGHT committed=0
+FAIL shared_committed
+
+shared_inflight exit=1
+second HEAD blocked=0 INPUT reservation=64 OUTPUT reservation=64
+FAIL shared_inflight
+
+independent exit=1
+second HEAD blocked=1 INPUT reservation=64 OUTPUT reservation=0
+FAIL independent
+
+independent_same exit=0
+second HEAD blocked=1 INPUT reservation=64 OUTPUT reservation=0
+PASS independent_same
+
+direct_committed exit=1
+direct advertised=1 accepted=1 WEIGHT committed=0
+FAIL direct_committed
+
+direct_reserved exit=1
+direct advertised=1 accepted=1 WEIGHT committed=64
+FAIL direct_reserved
