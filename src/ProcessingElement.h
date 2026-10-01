@@ -69,7 +69,15 @@ SC_MODULE(ProcessingElement) {
 
   BufferBank rx_buffer; // 物理输入缓冲区
 
-  // [新增] 用于跟踪正在接收、但未完全提交到逻辑缓冲区的数据的总大小
+  // [新增] 跟踪正在接收、但未完全提交到逻辑缓冲区的数据（已接收 HEAD、
+  // 尚未提交 TAIL 的在途预留）。按数据类型分别记账，以便：
+  //  - 共享模式下汇总整个池的在途预留；
+  //  - 独立模式下只计入对应类型池的在途预留。
+  std::map<DataType, size_t> inflight_reserved_by_type_;
+
+  // 兼容既有统计字段：main 汇总 INPUT/WEIGHT 的在途预留，
+  // output 汇总 OUTPUT 的在途预留。所有更新必须经过
+  // add_inflight_reservation/release_inflight_reservation。
   size_t main_receiving_size_;
   size_t output_receiving_size_;
 
@@ -78,6 +86,18 @@ SC_MODULE(ProcessingElement) {
   void txProcess(); // The transmitting process
   Flit nextFlit();  // Take the next flit of the current packet
   Flit nextOutputFlit();
+
+private:
+  // --- 接收容量预留（reservation）记账 ---
+  // HEAD 成功接收时预留 payload，TAIL 成功提交后释放。
+  void add_inflight_reservation(DataType type, size_t size);
+  void release_inflight_reservation(DataType type, size_t size);
+  // 共享模式返回全池在途预留总和；独立模式返回该类型池的在途预留。
+  size_t inflight_reservation_for_admission(DataType type) const;
+  // 物理 VC 路径与直接提交路径共用的容量准入判断。
+  bool can_reserve_receive(DataType type, size_t size) const;
+
+public:
 
   // Traffic-related functions removed (not used in current implementation)
   // bool canShot(Packet & packet);
@@ -277,6 +297,7 @@ public: // 建议将内部状态变量设为私有
     // 初始化新的成员变量
     main_receiving_size_ = 0;
     output_receiving_size_ = 0;
+    inflight_reserved_by_type_.clear();
 
     // 初始化VC队列
     packet_queues_.resize(GlobalParams::n_virtual_channels);

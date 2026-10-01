@@ -63,6 +63,28 @@ public:
     size_t GetDataSize(DataType type) const;
 
     /**
+     * @brief 获取缓冲区模式
+     */
+    BufferMode GetMode() const;
+
+    /**
+     * @brief 统一的容量准入判断。
+     *
+     * 同时计入已提交数据与调用方持有的在途预留（已接收 HEAD、尚未提交
+     * TAIL 的数据）。
+     * - SHARED 模式：inflight_reservation 必须是整个池所有类型的在途预留
+     *   总和，与全池已提交量之和不得超过总容量。
+     * - INDEPENDENT 模式：inflight_reservation 必须是 type 对应独立池的
+     *   在途预留，与该类型已提交量之和不得超过该类型容量。
+     *
+     * @param type 数据包的数据类型
+     * @param size 本次请求准入的数据大小
+     * @param inflight_reservation 与模式匹配的在途预留量
+     */
+    bool CanReserve(DataType type, size_t size,
+                    size_t inflight_reservation) const;
+
+    /**
      * @brief 检查缓冲区是否满载
      * @param type 数据类型，仅在INDEPENDENT模式下有效
      */

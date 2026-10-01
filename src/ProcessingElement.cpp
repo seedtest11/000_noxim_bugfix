@@ -223,6 +223,7 @@ void ProcessingElement::rxProcess()
     // 重置接收状态计数器
     main_receiving_size_ = 0;
     output_receiving_size_ = 0;
+    inflight_reserved_by_type_.clear();
 
     for (int i = 0; i < NUM_LOCAL_PORTS; ++i)
     {
@@ -354,6 +355,72 @@ void ProcessingElement::rxProcess()
 }
 
 // 新增：内部流式处理函数实现
+
+void ProcessingElement::add_inflight_reservation(DataType type, size_t size)
+{
+  inflight_reserved_by_type_[type] += size;
+
+  if (type == DataType::OUTPUT)
+  {
+    output_receiving_size_ += size;
+  }
+  else
+  {
+    // INPUT / WEIGHT 共用 main 统计口径
+    main_receiving_size_ += size;
+  }
+}
+
+void ProcessingElement::release_inflight_reservation(DataType type,
+                                                     size_t size)
+{
+  size_t &reserved = inflight_reserved_by_type_[type];
+  assert(reserved >= size && "Inflight reservation underflow");
+  reserved -= size;
+
+  if (type == DataType::OUTPUT)
+  {
+    assert(output_receiving_size_ >= size &&
+           "Output receiving size underflow");
+    output_receiving_size_ -= size;
+  }
+  else
+  {
+    assert(main_receiving_size_ >= size && "Main receiving size underflow");
+    main_receiving_size_ -= size;
+  }
+}
+
+size_t ProcessingElement::inflight_reservation_for_admission(
+    DataType type) const
+{
+  if (unified_buffer_manager_->GetMode() == BufferMode::SHARED)
+  {
+    // 共享模式：所有类型共用一个池，必须计入全部在途预留
+    size_t total = 0;
+    for (const auto &entry : inflight_reserved_by_type_)
+    {
+      total += entry.second;
+    }
+    return total;
+  }
+
+  // 独立模式：仅计入该类型自身池的在途预留
+  auto it = inflight_reserved_by_type_.find(type);
+  return (it != inflight_reserved_by_type_.end()) ? it->second : 0;
+}
+
+bool ProcessingElement::can_reserve_receive(DataType type,
+                                            size_t size) const
+{
+  if (unified_buffer_manager_ == nullptr)
+  {
+    return false;
+  }
+  return unified_buffer_manager_->CanReserve(
+      type, size, inflight_reservation_for_admission(type));
+}
+
 void ProcessingElement::internal_transfer_process()
 {
   // 遍历所有虚拟通道
@@ -382,28 +449,15 @@ void ProcessingElement::internal_transfer_process()
           continue; // 继续处理下一个flit
         }
 
-        // 正常数据包的流控检查
-        size_t *receiving_size = nullptr;
-
-        if (flit.data_type == DataType::OUTPUT)
+        // 正常数据包的流控检查：
+        // 共享模式按整池已提交量 + 全池在途预留判断；
+        // 独立模式仅按对应类型池的已提交量 + 该类型在途预留判断。
+        if (can_reserve_receive(flit.data_type,
+                                flit.payload_data_size))
         {
-          receiving_size = &output_receiving_size_;
-        }
-        else
-        {
-          receiving_size = &main_receiving_size_;
-        }
-
-        // 执行关键的流控决策
-        size_t required_capacity =
-            unified_buffer_manager_->GetCurrentSize(flit.data_type) +
-            *receiving_size + flit.payload_data_size;
-
-        if (required_capacity <=
-            unified_buffer_manager_->GetCapacity(flit.data_type))
-        {
-          // 检查通过：预留空间
-          *receiving_size += flit.payload_data_size;
+          // 检查通过：HEAD 成功接收即预留该包的容量
+          add_inflight_reservation(flit.data_type,
+                                   flit.payload_data_size);
           vc_buffer.Pop();
 
           // 处理command_id等元数据
@@ -415,15 +469,23 @@ void ProcessingElement::internal_transfer_process()
 
           LOG << "[INTERNAL_TRANSFER] Accepted HEAD Flit on VC " << vc
               << " src_id=" << flit.src_id
+              << " type=" << DataType_to_str(flit.data_type)
               << " payload=" << flit.payload_data_size
-              << " reserved_space=" << *receiving_size
+              << " reserved_type="
+              << inflight_reserved_by_type_[flit.data_type]
               << " command_id=" << flit.command << endl;
         }
         else
         {
-          // 逻辑缓冲区空间不足，阻塞当前VC
+          // 逻辑缓冲区空间不足，保留队首 HEAD（背压），不丢包、不预留
           LOG << "[INTERNAL_TRANSFER] HEAD Flit BLOCKED on VC " << vc
-              << " required=" << required_capacity << " capacity="
+              << " type=" << DataType_to_str(flit.data_type)
+              << " required=" << flit.payload_data_size
+              << " committed="
+              << unified_buffer_manager_->GetCurrentSize(flit.data_type)
+              << " inflight="
+              << inflight_reservation_for_admission(flit.data_type)
+              << " capacity="
               << unified_buffer_manager_->GetCapacity(flit.data_type) << endl;
           break;
         }
@@ -462,25 +524,27 @@ void ProcessingElement::internal_transfer_process()
           continue;
         }
 
-        // 正常数据包的TAIL处理
-        size_t *receiving_size = nullptr;
+        // 正常数据包的TAIL处理：将数据正式"入库"。
+        // 只有提交成功才释放预留并消费 TAIL；提交失败必须背压保留队首，
+        // 不能忽略返回值吞掉数据，也不能提前释放预留。
+        const bool committed = unified_buffer_manager_->OnDataReceived(
+            flit.data_type, flit.payload_data_size);
 
-        if (flit.data_type == DataType::OUTPUT)
+        if (!committed)
         {
-          receiving_size = &output_receiving_size_;
-        }
-        else
-        {
-          receiving_size = &main_receiving_size_;
+          LOG << "[INTERNAL_TRANSFER] TAIL Flit COMMIT BLOCKED on VC " << vc
+              << " type=" << DataType_to_str(flit.data_type)
+              << " payload=" << flit.payload_data_size
+              << " committed="
+              << unified_buffer_manager_->GetCurrentSize(flit.data_type)
+              << "/"
+              << unified_buffer_manager_->GetCapacity(flit.data_type) << endl;
+          break;
         }
 
-        // 调用OnDataReceived将数据正式"入库"
-        unified_buffer_manager_->OnDataReceived(flit.data_type,
-                                                flit.payload_data_size);
-        // 释放预留的空间
-        assert(*receiving_size >= flit.payload_data_size &&
-               "Receiving size underflow");
-        *receiving_size -= flit.payload_data_size;
+        // 提交成功：释放 HEAD 时预留的容量
+        release_inflight_reservation(flit.data_type,
+                                     flit.payload_data_size);
 
         vc_buffer.Pop();
 
@@ -931,9 +995,10 @@ bool ProcessingElement::can_accept_direct_packet(const Packet &pkt) const
     return true;
   }
 
-  size_t current_size = unified_buffer_manager_->GetCurrentSize(pkt.data_type);
-  size_t cap = unified_buffer_manager_->GetCapacity(pkt.data_type);
-  return current_size + static_cast<size_t>(pkt.payload_data_size) <= cap;
+  // 与物理 VC 路径一致：共享模式按整池、独立模式按对应类型池判断，
+  // 且必须计入物理 VC 路径上已接收 HEAD 尚未提交 TAIL 的在途预留。
+  return can_reserve_receive(pkt.data_type,
+                             static_cast<size_t>(pkt.payload_data_size));
 }
 
 bool ProcessingElement::receive_direct_packet(const Packet &pkt, int src_id)
@@ -951,7 +1016,21 @@ bool ProcessingElement::receive_direct_packet(const Packet &pkt, int src_id)
     return true;
   }
 
-  unified_buffer_manager_->OnDataReceived(pkt.data_type, pkt.payload_data_size);
+  // 直接提交：不经 HEAD/TAIL，不持有预留。准入已计入在途预留，
+  // 这里必须以实际提交结果为准，提交失败不得报告成功。
+  const bool committed = unified_buffer_manager_->OnDataReceived(
+      pkt.data_type, static_cast<size_t>(pkt.payload_data_size));
+  if (!committed)
+  {
+    LOG << "[DIRECT_RECEIVE] Commit rejected for direct packet"
+        << " type=" << DataType_to_str(pkt.data_type)
+        << " payload=" << pkt.payload_data_size
+        << " committed="
+        << unified_buffer_manager_->GetCurrentSize(pkt.data_type) << "/"
+        << unified_buffer_manager_->GetCapacity(pkt.data_type) << endl;
+    return false;
+  }
+
   if (pkt.command != -1 && pkt.data_type != DataType::WEIGHT)
   {
     pending_commands_[pkt.logical_timestamp] = pkt.command;

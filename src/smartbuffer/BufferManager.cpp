@@ -85,6 +85,38 @@ size_t BufferManager::GetDataSize(DataType type) const
     }
 }
 
+BufferMode BufferManager::GetMode() const
+{
+    return mode_;
+}
+
+bool BufferManager::CanReserve(DataType type, size_t size,
+                               size_t inflight_reservation) const
+{
+    if (mode_ == BufferMode::SHARED)
+    {
+        // 共享模式：全池已提交量 + 全池在途预留不得超过总容量
+        return current_size_ + inflight_reservation + size <= capacity_;
+    }
+
+    // 独立模式：仅该类型的已提交量与该类型池的在途预留参与判断
+    size_t committed = 0;
+    auto size_it = internal_buffer_sizes_.find(type);
+    if (size_it != internal_buffer_sizes_.end())
+    {
+        committed = size_it->second;
+    }
+
+    size_t limit = 0;
+    auto cap_it = type_capacities_.find(type);
+    if (cap_it != type_capacities_.end())
+    {
+        limit = cap_it->second;
+    }
+
+    return committed + inflight_reservation + size <= limit;
+}
+
 // --- 核心功能实现 ---
 
 bool BufferManager::OnDataReceived(DataType type, size_t size_added)
