@@ -48,6 +48,11 @@ public:
     bool RemoveData(DataType type, size_t size);
 
     /**
+     * @brief 获取缓冲区容量模式（共享 / 按类型独立）
+     */
+    BufferMode GetMode() const;
+
+    /**
      * @brief 获取容量
      * @param type 数据类型，仅在INDEPENDENT模式下有效
      * @return 共享模式返回总容量，独立模式返回特定类型容量

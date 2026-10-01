@@ -69,9 +69,22 @@ SC_MODULE(ProcessingElement) {
 
   BufferBank rx_buffer; // 物理输入缓冲区
 
-  // [新增] 用于跟踪正在接收、但未完全提交到逻辑缓冲区的数据的总大小
+  // [新增] 按数据类型跟踪 HEAD 已接收、TAIL 尚未提交的在途预留。
+  // 容量准入的唯一事实来源；共享模式按整池汇总，独立模式只看同类型。
+  std::map<DataType, size_t> inflight_reserved_by_type_;
+
+  // 兼容旧口径的汇总视图：main = INPUT + WEIGHT，output = OUTPUT，
+  // 由 inflight_reserved_by_type_ 派生，禁止单独修改。
   size_t main_receiving_size_;
   size_t output_receiving_size_;
+
+  // 容量准入与在途预留计账（物理 VC 路径与 direct 路径共用同一规则）
+  size_t get_inflight_reserved(DataType type) const;
+  size_t get_total_inflight_reserved() const;
+  bool has_capacity_for(DataType type, size_t size) const;
+  void add_inflight_reservation(DataType type, size_t size);
+  void release_inflight_reservation(DataType type, size_t size);
+  void clear_inflight_reservations();
 
   // Functions
   void rxProcess(); // The receiving process

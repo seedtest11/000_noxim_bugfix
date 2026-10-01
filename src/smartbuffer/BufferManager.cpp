@@ -29,6 +29,11 @@ BufferManager::BufferManager(const std::map<DataType, size_t> &type_capacities)
 
 // --- 查询接口实现 ---
 
+BufferMode BufferManager::GetMode() const
+{
+    return mode_;
+}
+
 size_t BufferManager::GetCapacity(DataType type) const
 {
     if (mode_ == BufferMode::SHARED || type == DataType::UNKNOWN)
